@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 import requests
+import os
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict
@@ -23,7 +24,7 @@ app.add_middleware(
 
 # OpenAI API Configuration
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Judge0 API Configuration (Compiler)
 JUDGE0_API_URL = "https://judge0-ce.p.rapidapi.com/submissions"
