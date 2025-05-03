@@ -23,7 +23,7 @@ app.add_middleware(
 
 # OpenAI API Configuration
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 
 # Judge0 API Configuration (Compiler)
 JUDGE0_API_URL = "https://judge0-ce.p.rapidapi.com/submissions"
