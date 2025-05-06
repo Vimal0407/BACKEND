@@ -29,20 +29,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Judge0 API Configuration (Compiler)
 JUDGE0_API_URL = "https://judge0-ce.p.rapidapi.com/submissions"
 JUDGE0_HEADERS = {
-  	"x-rapidapi-key": "301672c4bamsh972d06a1d1de8bap1b473ajsn0dcda6e5ef99",
-	"x-rapidapi-host": "judge0-ce.p.rapidapi.com",
-	"Content-Type": "application/json"
+    "x-rapidapi-key": "301672c4bamsh972d06a1d1de8bap1b473ajsn0dcda6e5ef99",
+    "x-rapidapi-host": "judge0-ce.p.rapidapi.com",
+    "Content-Type": "application/json"
 }
 
 # In-memory storage for ongoing executions
 executions: Dict[str, Dict] = {}
 
+# Request models
 class CodeRequest(BaseModel):
     language_id: int
-    source_code: Optional[str] = None  # Optional to allow input-only requests
+    source_code: Optional[str] = None
     stdin: Optional[str] = None
     execution_id: Optional[str] = None  
-    
+
 class ErrorExplainRequest(BaseModel):
     error_message: str
 
@@ -56,39 +57,39 @@ class DebugRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str
 
+# OpenAI call handler
 async def make_openai_request(payload: dict):
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
     }
     try:
-         async with httpx.AsyncClient(timeout=30.0) as client:  # Increase timeout
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(OPENAI_API_URL, json=payload, headers=headers)
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as e:
         logging.error(f"OpenAI API request failed: {e}")
         return {"error": "OpenAI API request failed"}
-    except httpx.ReadTimeout as e:
+    except httpx.ReadTimeout:
         logging.error("OpenAI API request timed out")
         return {"error": "OpenAI API request timed out"}
     return {"error": "OpenAI API request failed"}
-    
-# API Endpoints
+
+# Root check
 @app.get("/")
 def read_root():
     return {"message": "Compiler API is running"}
 
+# Run code with Judge0
 @app.post("/run_code/")
 async def run_code(request: CodeRequest):
     try:
         if request.execution_id and request.execution_id in executions:
-            # Continue previous execution with new input
             execution = executions[request.execution_id]
             source_code = execution["source_code"]
             stdin = execution["stdin"] + "\n" + (request.stdin or "")
         else:
-            # New execution
             execution_id = str(uuid.uuid4())
             source_code = request.source_code
             stdin = request.stdin or ""
@@ -96,21 +97,26 @@ async def run_code(request: CodeRequest):
                 "source_code": source_code,
                 "stdin": stdin
             }
-        
-        # Submit code execution request
+
         submission_response = requests.post(
             f"{JUDGE0_API_URL}?base64_encoded=false&wait=true",
-            json={"source_code": source_code, "language_id": request.language_id, "stdin": stdin},
+            json={
+                "source_code": source_code,
+                "language_id": request.language_id,
+                "stdin": stdin,
+                "cpu_time_limit": 10,       # Increased time limit
+                "memory_limit": 262144      # Increased memory (256 MB)
+            },
             headers=JUDGE0_HEADERS
         )
         submission_response.raise_for_status()
         result = submission_response.json()
+        logging.info(f"Judge0 result: {result}")
 
         output = result.get("stdout", "")
-        error = result.get("stderr", "")
+        error = result.get("stderr", "") or result.get("compile_output", "") or result.get("message", "")
 
-        # Check if the program is requesting more input
-        requires_input = "input" in output.lower() or output.endswith(": ")  # Simple check
+        requires_input = "input" in output.lower() or output.endswith(": ")
 
         if requires_input:
             execution_id = request.execution_id or str(uuid.uuid4())
@@ -124,10 +130,12 @@ async def run_code(request: CodeRequest):
             "requires_input": requires_input,
             "execution_id": execution_id
         }
+
     except requests.exceptions.RequestException as e:
         logging.error(f"Judge0 connection error: {str(e)}")
         raise HTTPException(status_code=502, detail=f"Judge0 connection error: {str(e)}")
 
+# Error explanation endpoint
 @app.post("/explain_error/")
 async def explain_error(request: ErrorExplainRequest):
     payload = {
@@ -140,6 +148,7 @@ async def explain_error(request: ErrorExplainRequest):
     result = await make_openai_request(payload)
     return {"explanation": result["choices"][0]["message"]["content"]}
 
+# Code translation
 @app.post("/translate_code/")
 async def translate_code(request: TranslateRequest):
     logging.info(f"Received translation request: {request}")
@@ -148,7 +157,7 @@ async def translate_code(request: TranslateRequest):
         "messages": [
             {
                 "role": "system",
-                "content": f"You are a code translator. Convert the following {request.source_code[:20]}... code from its current language to {request.target_language}. Ensure syntax is correct and no comments or explanations are included in the output."
+                "content": f"You are a code translator. Convert the following code from its current language to {request.target_language}. Ensure syntax is correct and no comments or explanations are included in the output."
             },
             {"role": "user", "content": request.source_code}
         ]
@@ -158,10 +167,9 @@ async def translate_code(request: TranslateRequest):
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
 
-    logging.info(f"Translation result: {result}")
     return {"translated_code": result["choices"][0]["message"]["content"]}
 
-
+# Code debugging
 @app.post("/debug/")
 async def debug_code(request: DebugRequest):
     payload = {
@@ -178,7 +186,7 @@ async def debug_code(request: DebugRequest):
 
     return {"optimized_code": result["choices"][0]["message"]["content"]}
 
-
+# Code search
 @app.post("/chatgpt_search/")
 async def chatgpt_search(request: SearchRequest):
     payload = {
@@ -189,6 +197,4 @@ async def chatgpt_search(request: SearchRequest):
         ]
     }
     result = await make_openai_request(payload)
-
-    # Ensure only code is returned
     return {"code": result.get("choices", [{}])[0].get("message", {}).get("content", "Error fetching code")}
